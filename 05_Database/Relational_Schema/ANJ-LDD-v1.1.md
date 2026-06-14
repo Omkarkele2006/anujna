@@ -19,6 +19,7 @@ The logical database model shall:
 6. Support audit trails enriched with client contextual information (IP address, user agent, metadata).
 7. Support emergency exception access workflows.
 8. Enforce strong data types (UUIDs for primary/foreign keys, precise datetime timestamps, strict Enums).
+9. Support standard system lifecycle fields (`created_at`, `updated_at`) across all tables, and soft deletion (`deleted_at`) for healthcare records, consent, and notifications.
 
 ---
 
@@ -43,7 +44,6 @@ Represents any authenticated participant within the platform (Patient, Doctor, A
 | `updated_at` | Timestamp | Non-Nullable | Default: Current Time | Timestamp of last modification. |
 
 * **Unique Constraints:** `email`
-* **Business Constraints:** Email must be unique. Suspended users are restricted from protected workflows.
 
 ---
 
@@ -58,6 +58,8 @@ Represents a collection of permissions that define system access rights.
 | `role_id` | UUID | Non-Nullable | PK, Default: UUID Gen | Unique identifier. |
 | `role_name` | String | Non-Nullable | Unique | Name of the role (e.g., `Patient`, `Doctor`). |
 | `description` | String | Non-Nullable | - | Short description of the role's purpose. |
+| `created_at` | Timestamp | Non-Nullable | Default: Current Time | Timestamp of role registration. |
+| `updated_at` | Timestamp | Non-Nullable | Default: Current Time | Timestamp of last modification. |
 
 * **Unique Constraints:** `role_name`
 
@@ -78,8 +80,9 @@ Associates users with assigned roles (resolves many-to-many relationship).
 | `user_id` | UUID | Non-Nullable | FK | Reference to the user. |
 | `role_id` | UUID | Non-Nullable | FK | Reference to the assigned role. |
 | `assigned_at` | Timestamp | Non-Nullable | Default: Current Time | When the role was assigned. |
+| `updated_at` | Timestamp | Non-Nullable | Default: Current Time | When the assignment was updated. |
 
-* **Unique Constraints:** `(user_id, role_id)` (prevents duplicate role assignments)
+* **Unique Constraints:** `(user_id, role_id)`
 
 ---
 
@@ -97,8 +100,10 @@ Demographic attributes specific to patients.
 | `user_id` | UUID | Non-Nullable | FK, Unique | Link to base User record. |
 | `date_of_birth` | Date | Non-Nullable | - | Patient's date of birth. |
 | `gender` | String | Non-Nullable | - | Patient's gender. |
+| `created_at` | Timestamp | Non-Nullable | Default: Current Time | Profile creation timestamp. |
+| `updated_at` | Timestamp | Non-Nullable | Default: Current Time | Profile modification timestamp. |
 
-* **Unique Constraints:** `user_id` (guarantees a User has at most one Patient profile)
+* **Unique Constraints:** `user_id`
 
 ---
 
@@ -115,9 +120,12 @@ Registry and verification attributes specific to doctors.
 | `doctor_profile_id` | UUID | Non-Nullable | PK, Default: UUID Gen | Unique identifier. |
 | `user_id` | UUID | Non-Nullable | FK, Unique | Link to base User record. |
 | `registration_number`| String | Non-Nullable | Unique | Professional medical registration ID. |
-| `verification_status`| Enum | Non-Nullable | Default: `PENDING` | Status: `PENDING`, `APPROVED`, `REJECTED`. |
+| `is_verified` | Boolean | Non-Nullable | Default: `false` | Verification state: `true` or `false` *(Refined)*. |
+| `created_at` | Timestamp | Non-Nullable | Default: Current Time | Profile creation timestamp. |
+| `updated_at` | Timestamp | Non-Nullable | Default: Current Time | Profile modification timestamp. |
 
 * **Unique Constraints:** `user_id`, `registration_number`
+* **Design Note:** Storing verification as a simple boolean `is_verified` avoids keeping double verification states (mismatches between request records and profile state).
 
 ---
 
@@ -135,6 +143,7 @@ Represents a unique patient healthcare identifier, separate from base profile co
 | `patient_profile_id` | UUID | Non-Nullable | FK, Unique | Link to PatientProfile. |
 | `health_identity_number`| String | Non-Nullable | Unique | ANUJNA Health ID (e.g. `ANJ26A7F92K4Q1`). |
 | `created_at` | Timestamp | Non-Nullable | Default: Current Time | Generation timestamp. |
+| `updated_at` | Timestamp | Non-Nullable | Default: Current Time | Timestamp of last modification. |
 
 * **Unique Constraints:** `patient_profile_id`, `health_identity_number`
 
@@ -158,8 +167,8 @@ Metadata and storage file references for patient medical documents.
 | `title` | String | Non-Nullable | - | Document title. |
 | `file_reference` | String | Non-Nullable | - | Reference to secure object storage path. |
 | `uploaded_at` | Timestamp | Non-Nullable | Default: Current Time | Upload timestamp. |
-
-* **Business Constraints:** Only patients or authorized actors (like Laboratory Staff) can upload records.
+| `updated_at` | Timestamp | Non-Nullable | Default: Current Time | Modification timestamp. |
+| `deleted_at` | Timestamp | Nullable | Default: Null | Soft-deletion flag *(Lifecycle)*. |
 
 ---
 
@@ -178,12 +187,11 @@ Stores access requests submitted by doctors to view patient records.
 | `doctor_profile_id` | UUID | Non-Nullable | FK | Doctor submitting the request. |
 | `patient_profile_id` | UUID | Non-Nullable | FK | Patient whose records are requested. |
 | `purpose` | String | Non-Nullable | - | Medical reason/purpose for request. |
-| `requested_scope_type`| Enum | Non-Nullable | Default: `ALL` | Scope: `ALL`, `CATEGORY`, `INDIVIDUAL` *(REF-003)*. |
-| `requested_category` | Enum | Nullable | - | Target `RecordType` if scope is `CATEGORY` *(REF-003)*. |
+| `requested_scope_type`| Enum | Non-Nullable | Default: `ALL` | Scope: `ALL`, `CATEGORY`, `INDIVIDUAL`. |
+| `requested_category` | Enum | Nullable | - | Target `RecordType` if scope is `CATEGORY`. |
 | `request_status` | Enum | Non-Nullable | Default: `PENDING` | Status: `PENDING`, `APPROVED`, `REJECTED`, `EXPIRED`. |
 | `requested_at` | Timestamp | Non-Nullable | Default: Current Time | Submission timestamp. |
-
-* **Business Constraints:** Only verified doctors (`verification_status == APPROVED`) can submit access requests.
+| `updated_at` | Timestamp | Non-Nullable | Default: Current Time | Last modification timestamp. |
 
 ---
 
@@ -198,17 +206,17 @@ Represents active patient authorization granting a doctor permission to view hea
 | Attribute | Type | Nullability | Constraints | Description |
 | :--- | :--- | :--- | :--- | :--- |
 | `consent_id` | UUID | Non-Nullable | PK, Default: UUID Gen | Unique identifier. |
-| `access_request_id` | UUID | Non-Nullable | FK, Unique | Mandatory link to approved `AccessRequest` *(REF-002 Decision)*. |
+| `access_request_id` | UUID | Non-Nullable | FK, Unique | Mandatory link to approved `AccessRequest`. |
 | `scope_type` | Enum | Non-Nullable | Default: `ALL` | Scope: `ALL`, `CATEGORY`, `INDIVIDUAL`. |
-| `record_type` | Enum | Nullable | - | Target `RecordType` if scope is `CATEGORY` *(REF-001)*. |
+| `record_type` | Enum | Nullable | - | Target `RecordType` if scope is `CATEGORY`. |
 | `status` | Enum | Non-Nullable | Default: `ACTIVE` | Status: `ACTIVE`, `REVOKED`, `EXPIRED`. |
 | `start_date` | Timestamp | Non-Nullable | - | Start of validity period. |
 | `end_date` | Timestamp | Non-Nullable | - | Expiration of validity period. |
 | `granted_at` | Timestamp | Non-Nullable | Default: Current Time | When the consent was recorded. |
+| `updated_at` | Timestamp | Non-Nullable | Default: Current Time | Modification timestamp. |
+| `deleted_at` | Timestamp | Nullable | Default: Null | Soft-deletion flag *(Lifecycle)*. |
 
-* **Unique Constraints:** `access_request_id` (maintains a strict 1:0..1 cardinality; one access request has at most one consent).
-* **Normalization (REF-002 Update):** Redundant fields `patient_profile_id` and `doctor_profile_id` have been removed since they are already captured in the parent `AccessRequest` and can be retrieved via relations.
-* **Business Constraints:** `end_date` must be greater than `start_date`. Once revoked or expired, consent status changes and access is denied.
+* **Unique Constraints:** `access_request_id`
 
 ---
 
@@ -226,8 +234,10 @@ Resolves the many-to-many relationship between `Consent` and specific individual
 | `consent_health_record_id`| UUID | Non-Nullable | PK, Default: UUID Gen | Unique identifier. |
 | `consent_id` | UUID | Non-Nullable | FK | Associated consent record. |
 | `health_record_id` | UUID | Non-Nullable | FK | Associated health record. |
+| `created_at` | Timestamp | Non-Nullable | Default: Current Time | Creation timestamp. |
+| `updated_at` | Timestamp | Non-Nullable | Default: Current Time | Modification timestamp. |
 
-* **Unique Constraints:** `(consent_id, health_record_id)` (prevents duplicate mappings)
+* **Unique Constraints:** `(consent_id, health_record_id)`
 
 ---
 
@@ -248,6 +258,7 @@ Audit log of doctor credentials reviews by administrators.
 | `status` | Enum | Non-Nullable | Default: `PENDING` | Status: `PENDING`, `APPROVED`, `REJECTED`. |
 | `submitted_at` | Timestamp | Non-Nullable | Default: Current Time | When requested. |
 | `reviewed_at` | Timestamp | Nullable | - | When reviewed. |
+| `updated_at` | Timestamp | Non-Nullable | Default: Current Time | When the request was modified. |
 
 ---
 
@@ -267,13 +278,12 @@ Tracks emergency healthcare information access overrides initiated by Emergency 
 | `patient_profile_id` | UUID | Non-Nullable | FK | Affected patient profile. |
 | `justification` | String | Non-Nullable | - | Text justification for the override. |
 | `accessed_at` | Timestamp | Non-Nullable | Default: Current Time | Override timestamp. |
-
-* **Business Constraints:** Justification is mandatory and must be logged. Emergency session duration is governed in application logic.
+| `updated_at` | Timestamp | Non-Nullable | Default: Current Time | Last update timestamp. |
 
 ---
 
 ### 2.13 EmergencyAccessRecord (Junction Table)
-Tracks the specific list of patient healthcare records accessed by the provider during an emergency event (resolves many-to-many relationship).
+Tracks the specific list of patient healthcare records accessed by the provider during an emergency event.
 
 * **Primary Key:** `emergency_access_record_id` (UUID) - *Surrogate key retained for MVP simplicity.*
 * **Foreign Keys:**
@@ -286,8 +296,10 @@ Tracks the specific list of patient healthcare records accessed by the provider 
 | `emergency_access_record_id`| UUID | Non-Nullable | PK, Default: UUID Gen | Unique identifier. |
 | `emergency_access_event_id` | UUID | Non-Nullable | FK | Associated emergency event. |
 | `health_record_id` | UUID | Non-Nullable | FK | Associated health record. |
+| `created_at` | Timestamp | Non-Nullable | Default: Current Time | Creation timestamp. |
+| `updated_at` | Timestamp | Non-Nullable | Default: Current Time | Last modification timestamp. |
 
-* **Unique Constraints:** `(emergency_access_event_id, health_record_id)` (prevents duplicate logs)
+* **Unique Constraints:** `(emergency_access_event_id, health_record_id)`
 
 ---
 
@@ -306,12 +318,12 @@ Stores tamper-evident records of sensitive system activities.
 | `action_type` | Enum | Non-Nullable | - | Action (e.g. `LOGIN`, `RECORD_VIEW`). |
 | `entity_type` | String | Non-Nullable | - | Affected table name (e.g. `HealthRecord`).|
 | `entity_id` | UUID | Nullable | - | Primary key of affected record. |
-| `ip_address` | String | Nullable | - | Client IP address *(REF-005)*. |
-| `user_agent` | String | Nullable | - | Client browser / user agent *(REF-005)*.|
-| `metadata` | JSON | Nullable | - | Auxiliary request parameters *(REF-005)*.|
+| `ip_address` | String | Nullable | - | Client IP address. |
+| `user_agent` | String | Nullable | - | Client browser / user agent.|
+| `metadata` | JSON | Nullable | - | Auxiliary request parameters.|
 | `timestamp` | Timestamp | Non-Nullable | Default: Current Time | Action timestamp. |
 
-* **Business Constraints:** Audit logs must be append-only and immutable. No update or delete operations are permitted.
+* **Business Constraints:** Audit logs are append-only and immutable. No update or delete operations are permitted (no `updated_at` or `deleted_at` attributes).
 
 ---
 
@@ -329,8 +341,10 @@ Tracks system alerts for users (e.g., access request alerts, consent revocations
 | `user_id` | UUID | Non-Nullable | FK | User receiving notification. |
 | `notification_type` | Enum | Non-Nullable | - | Type (e.g. `ACCESS_REQUEST`). |
 | `message` | String | Non-Nullable | - | Alert message content. |
-| `status` | Enum | Non-Nullable | Default: `UNREAD` | Read status: `UNREAD`, `READ`. |
+| `status` | Enum | Non-Nullable | Default: `UNREAD` | Read status: `UNREAD`, `READ` *(Refined)*. |
 | `created_at` | Timestamp | Non-Nullable | Default: Current Time | Alert timestamp. |
+| `updated_at` | Timestamp | Non-Nullable | Default: Current Time | Last modification timestamp. |
+| `deleted_at` | Timestamp | Nullable | Default: Null | Soft-deletion flag *(Lifecycle)*. |
 
 ---
 
@@ -351,7 +365,7 @@ The schema uses three explicit junction tables to map many-to-many (M:N) relatio
 To meet latency requirements (under 2 seconds for API routing, 3 seconds for record fetching), the following database indexes are defined:
 
 1. **`User`**: Unique Index on `email` (login queries).
-2. **`DoctorProfile`**: Unique Index on `registration_number` (verification lookup).
+2. **`DoctorProfile`**: Unique Index on `registration_number` (verification lookup) and Index on `is_verified` (verifying doctor privileges).
 3. **`HealthIdentity`**: Unique Index on `health_identity_number` (patient searches by Doctor).
 4. **`HealthRecord`**: Index on `patient_profile_id` (dashboard retrieval).
 5. **`AccessRequest`**:

@@ -1,6 +1,12 @@
-export default {
+import { defineConfig, env } from "prisma/config";
+
+// Load environment variables from .env file using Node 22's native support
+process.loadEnvFile();
+
+export default defineConfig({
   schema: "prisma/schema.prisma",
   datasource: {
-    url: process.env.DATABASE_URL || "postgresql://postgres:postgres@localhost:5432/anujna?schema=public",
+    url: env("DATABASE_URL"),
   },
-};
+});
+
